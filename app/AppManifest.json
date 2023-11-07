@@ -1,15 +1,32 @@
 {
     "manifestVersion": "v3",
-    "name": "SampleApp",
+    "name": "DataStorageApp",
     "interfaces": [
         {
             "type": "vehicle-signal-interface",
             "config": {
                 "src": "https://github.com/COVESA/vehicle_signal_specification/releases/download/v3.0/vss_rel_3.0.json",
-                "datapoints": {
+                "datapoints":
+                {
                     "required": [
                         {
+                            "path": "Vehicle.ADAS.ObstacleDetection.IsWarning",
+                            "required": "true",
+                            "access": "read"
+                        },
+                        {
+                            "path": "Vehicle.Acceleration.Longitudinal",
+                            "required": "true",
+                            "access": "read"
+                        },
+                        {
                             "path": "Vehicle.Speed",
+                            "required": "true",
+                            "access": "read"
+                        },
+                        {
+                            "path": "Vehicle.Powertrain.CombustionEngine.Displacement",
+                            "required": "true",
                             "access": "read"
                         }
                     ]
@@ -20,11 +37,10 @@
             "type": "pubsub",
             "config": {
                 "reads": [
-                    "sampleapp/getSpeed"
+                    "crashdetect/crashed/response"
                 ],
                 "writes": [
-                    "sampleapp/getSpeed/response",
-                    "sampleapp/currentSpeed"
+                    "crashdetect/crashed"
                 ]
             }
         }

@@ -12,12 +12,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""A sample skeleton vehicle app."""
-
 import asyncio
+import csv
 import json
 import logging
 import signal
+import time
+from collections import deque
 
 from vehicle import Vehicle, vehicle  # type: ignore
 from velocitas_sdk.util.log import (  # type: ignore
@@ -33,80 +34,88 @@ logging.basicConfig(format=get_opentelemetry_log_format())
 logging.getLogger().setLevel("DEBUG")
 logger = logging.getLogger(__name__)
 
-GET_SPEED_REQUEST_TOPIC = "sampleapp/getSpeed"
-GET_SPEED_RESPONSE_TOPIC = "sampleapp/getSpeed/response"
-DATABROKER_SUBSCRIPTION_TOPIC = "sampleapp/currentSpeed"
+SET_CRASH_EVENT_TOPIC = "crashdetect/crashed"
+SET_CRASH_RESPONSE_TOPIC = "crashdetect/crashed/response"
+
+CSV_FILE_NAME_TOPIC = "vehicle_data.csv"
+CSV_FILE_PATH = "."
 
 
-class SampleApp(VehicleApp):
-    """
-    Sample skeleton vehicle app.
-
-    The skeleton subscribes to a getSpeed MQTT topic
-    to listen for incoming requests to get
-    the current vehicle speed and publishes it to
-    a response topic.
-
-    It also subcribes to the VehicleDataBroker
-    directly for updates of the
-    Vehicle.Speed signal and publishes this
-    information via another specific MQTT topic
-    """
-
+class DataStorageApp(VehicleApp):
     def __init__(self, vehicle_client: Vehicle):
-        # SampleApp inherits from VehicleApp.
         super().__init__()
         self.Vehicle = vehicle_client
+        self.distance = 0
+        self.accel = 0
+        self.speed = 0
+        self.displacement = 0
+
+        self.storage = deque([])
 
     async def on_start(self):
-        """Run when the vehicle app starts"""
-        # This method will be called by the SDK when the connection to the
-        # Vehicle DataBroker is ready.
-        # Here you can subscribe for the Vehicle Signals update (e.g. Vehicle Speed).
+        await self.Vehicle.ADAS.ObstacleDetection.IsWarning.subscribe(
+            self.on_distance_change
+        )
+        await self.Vehicle.Acceleration.Longitudinal.subscribe(self.on_accel_change)
         await self.Vehicle.Speed.subscribe(self.on_speed_change)
+        await self.Vehicle.Powertrain.CombustionEngine.Displacement.subscribe(
+            self.on_displacement_change
+        )
+        await self.timer_for_csv()
+
+    async def on_distance_change(self, data: DataPointReply):
+        self.distance = data.get(self.Vehicle.ADAS.ObstacleDetection.IsWarning).value
+
+    async def on_accel_change(self, data: DataPointReply):
+        self.accel = data.get(self.Vehicle.Acceleration.Longitudinal).value
 
     async def on_speed_change(self, data: DataPointReply):
-        """The on_speed_change callback, this will be executed when receiving a new
-        vehicle signal updates."""
-        # Get the current vehicle speed value from the received DatapointReply.
-        # The DatapointReply containes the values of all subscribed DataPoints of
-        # the same callback.
-        vehicle_speed = data.get(self.Vehicle.Speed).value
+        self.speed = data.get(self.Vehicle.Speed).value
 
-        # Do anything with the received value.
-        # Example:
-        # - Publishes current speed to MQTT Topic (i.e. DATABROKER_SUBSCRIPTION_TOPIC).
+    async def on_displacement_change(self, data: DataPointReply):
+        self.displacement = data.get(
+            self.Vehicle.Powertrain.CombustionEngine.Displacement
+        ).value
+
+    async def timer_for_csv(self):
+        while True:
+            temp = [
+                time.time(),
+                self.distance,
+                self.accel,
+                self.speed,
+                self.displacement,
+            ]
+            if len(self.storage) == 300:
+                self.storage.popleft()
+
+            self.storage.append(temp)
+            time.sleep(0.1)
+
+    @subscribe_topic(SET_CRASH_EVENT_TOPIC)
+    async def on_crash_event_received(self, data_str: str) -> None:
+        logger.info("Data Storaging...")
+        data = json.loads(data_str)
+        if data["status"] == 0:
+            return
+        logger.info("Data Storaging...")
+        with open(CSV_FILE_NAME_TOPIC, "w", newline="") as csvfile:
+            writer = csv.writer(csvfile)
+            writer.writerow(["timestamp", "distance", "accel", "speed", "displacement"])
+            for entry in self.storage:
+                writer.writerow(entry)
+
+        self.storage.clear()
+
+        await self.set_response(0)
+
+    async def set_response(self, status):
         await self.publish_event(
-            DATABROKER_SUBSCRIPTION_TOPIC,
-            json.dumps({"speed": vehicle_speed}),
-        )
-
-    @subscribe_topic(GET_SPEED_REQUEST_TOPIC)
-    async def on_get_speed_request_received(self, data: str) -> None:
-        """The subscribe_topic annotation is used to subscribe for incoming
-        PubSub events, e.g. MQTT event for GET_SPEED_REQUEST_TOPIC.
-        """
-
-        # Use the logger with the preferred log level (e.g. debug, info, error, etc)
-        logger.debug(
-            "PubSub event for the Topic: %s -> is received with the data: %s",
-            GET_SPEED_REQUEST_TOPIC,
-            data,
-        )
-
-        # Getting current speed from VehicleDataBroker using the DataPoint getter.
-        vehicle_speed = (await self.Vehicle.Speed.get()).value
-
-        # Do anything with the speed value.
-        # Example:
-        # - Publishes the vehicle speed to MQTT topic (i.e. GET_SPEED_RESPONSE_TOPIC).
-        await self.publish_event(
-            GET_SPEED_RESPONSE_TOPIC,
+            SET_CRASH_RESPONSE_TOPIC,
             json.dumps(
                 {
                     "result": {
-                        "status": 0,
-                        "message": f"""Current Speed = {vehicle_speed}""",
+                        "status": status,
                     },
                 }
             ),
@@ -115,9 +124,8 @@ class SampleApp(VehicleApp):
 
 async def main():
     """Main function"""
-    logger.info("Starting SampleApp...")
-    # Constructing SampleApp and running it.
-    vehicle_app = SampleApp(vehicle)
+    logger.info("Starting DataStorageApp...")
+    vehicle_app = DataStorageApp(vehicle)
     await vehicle_app.run()
 
 
